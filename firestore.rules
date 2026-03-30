@@ -1,0 +1,153 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields:
+    //   - email: string (required)
+    //   - name: string (required)
+    //   - role: string (required, ['admin', 'user'])
+    //
+    // Collection: brands
+    // Fields:
+    //   - name: string (required, 1-100 chars)
+    //   - description: string (optional, 0-500 chars)
+    //
+    // Collection: categories
+    // Fields:
+    //   - name: string (required, 1-100 chars)
+    //   - description: string (optional, 0-500 chars)
+    //
+    // Collection: products (Raw Materials)
+    // Fields:
+    //   - brandId: string (required)
+    //   - categoryId: string (required)
+    //   - name: string (required, 1-200 chars)
+    //   - variant: string (optional, 0-100 chars)
+    //   - unit: string (required, 1-20 chars)
+    //   - stock: number (required, >= 0)
+    //   - lowStockThreshold: number (required, >= 0)
+    //
+    // Collection: transactions
+    // Fields:
+    //   - productId: string (required)
+    //   - type: string (required, ['IN', 'OUT', 'DELIVERY'])
+    //   - quantity: number (required, > 0)
+    //   - date: string (required, ISO 8601)
+    //   - note: string (optional, 0-500 chars)
+    //   - userId: string (required)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "iftekharwashimm@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'name', 'role']) &&
+             data.email is string && isValidEmail(data.email) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.role in ['admin', 'user'];
+    }
+
+    function isValidBrand(data) {
+      return data.keys().hasAll(['name']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500));
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['name']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500));
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['brandId', 'categoryId', 'name', 'unit', 'stock', 'lowStockThreshold']) &&
+             data.brandId is string &&
+             data.categoryId is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 200 &&
+             data.unit is string && data.unit.size() > 0 && data.unit.size() <= 20 &&
+             data.stock is number &&
+             data.lowStockThreshold is number && data.lowStockThreshold >= 0 &&
+             (!('variant' in data) || (data.variant is string && data.variant.size() <= 100));
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['productId', 'type', 'quantity', 'date', 'userId', 'createdAt']) &&
+             data.productId is string &&
+             data.type in ['IN', 'OUT', 'DELIVERY'] &&
+             data.quantity is number && data.quantity > 0 &&
+             isValidDateString(data.date) &&
+             data.userId == request.auth.uid &&
+             data.createdAt == request.time &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 500));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == 'user';
+      allow update: if (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role) || isAdmin();
+    }
+
+    match /brands/{brandId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAdmin() && isValidBrand(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /categories/{categoryId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAdmin() && isValidCategory(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /products/{productId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidProduct(request.resource.data);
+      allow update: if isAuthenticated() && isValidProduct(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /transactions/{transactionId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidTransaction(request.resource.data);
+      allow update, delete: if isAdmin();
+    }
+  }
+}
